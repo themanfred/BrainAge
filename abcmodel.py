@@ -20,12 +20,20 @@ class ABCFramework(nn.Module):
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv5 = nn.Conv2d(in_channels=6, out_channels=9, kernel_size=3, stride=1, padding=1)
         self.conv6 = nn.Conv2d(in_channels=9, out_channels=9, kernel_size=3, stride=1, padding=1)
+
+        #Set window and img size
+        self.window_size = window_size
+        self.img_size = img_size
         
         # Parameters for Q, K, V
         self.num_heads = num_heads
         self.dim_head = dim_head
         self.scale = dim_head ** -0.5
-        
+
+        # Initialize the relative position bias table
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((window_size * window_size, num_heads))
+        )
         # Linear transformations for Q, K, V
         self.to_qkv = nn.Linear(9, num_heads * dim_head * 3, bias=False)
         
@@ -84,19 +92,19 @@ class ABCFramework(nn.Module):
         
         # Flatten the relative coordinates and add an extra dimension for heads
         relative_coords = relative_coords.view(-1, 2).unsqueeze(0)
+
         
-        # Define learnable parameters for relative position bias
-        relative_position_bias_table = nn.Parameter(
-            torch.zeros((M * M, num_heads))  # Size (M*M, num_heads)
-        )
+       # Use self.num_heads instead of hardcoding the number of heads
+        relative_position_bias = self.relative_position_bias_table[relative_position_index.view(-1)].view(
+            self.window_size, self.window_size, self.num_heads)
+
         
         # Convert relative position indices to linear indices
         relative_position_index = relative_coords[:, :, 0] * 2 * M + relative_coords[:, :, 1] + M
         
         # Get the biases for the relative positions
         relative_position_bias = relative_position_bias_table[relative_position_index.view(-1)].view(
-            M, M, num_heads
-        )
+            M, M, num_heads)
         
         return relative_position_bias.permute(2, 0, 1)  # Shape (num_heads, M, M)
 
