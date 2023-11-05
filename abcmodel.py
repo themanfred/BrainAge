@@ -72,11 +72,15 @@ class ABCFramework(nn.Module):
         # Shifting the window partition
         attn_output = self.shift_window_partition(attn_output)
 
-      # Transform attention output into gestational age distribution
-        x = attn_output.flatten(1)
-        x = F.relu(self.fc1(x))
+        # Flatten and pass through additional layers to transform attention output into gestational age distribution
+        attn_output_flat = attn_output.flatten(1)
+        x = F.relu(self.fc1(attn_output_flat))
         x = self.fc2(x)
-        predicted_ages = F.softmax(x, dim=1)
+        predicted_age_distributions = F.softmax(x, dim=1)
+        
+        # Convert predicted age distributions to single predicted age value
+        age_classes = torch.arange(GESTATIONAL_AGE_MIN, GESTATIONAL_AGE_MAX + 1, device=x.device)
+        predicted_ages = torch.sum(predicted_age_distributions * age_classes, dim=1)
         
         return predicted_ages
         #return attn_output
