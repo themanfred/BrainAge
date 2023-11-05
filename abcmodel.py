@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Constants defining the gestational age range
+GESTATIONAL_AGE_MIN = 15  # Minimum gestational age in weeks
+GESTATIONAL_AGE_MAX = 40  # Maximum gestational age in weeks
+NUM_AGES = GESTATIONAL_AGE_MAX - GESTATIONAL_AGE_MIN + 1  # Total number of age classes
+
 class ABCFramework(nn.Module):
     def __init__(self, num_heads, dim_head):
         super(ABCFramework, self).__init__()
@@ -53,8 +58,15 @@ class ABCFramework(nn.Module):
         
         # Shifting the window partition
         attn_output = self.shift_window_partition(attn_output)
+
+      # Transform attention output into gestational age distribution
+        x = attn_output.flatten(1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        predicted_ages = F.softmax(x, dim=1)
         
-        return attn_output
+        return predicted_ages
+        #return attn_output
     
     def compute_relative_position_bias(self, H, W):
         # Assuming window size (M) is 4, and the number of attention heads is 4
