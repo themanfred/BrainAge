@@ -7,6 +7,40 @@ from model import ABCFramework
 from torch.utils.data import DataLoader
 from some_dataset_module import YourDataset  # Replace with your actual dataset module
 
+class img_dataset(Dataset):
+    def __init__(self, root_dir, view):
+        self.root_dir = root_dir
+        self.view = view
+
+    def __len__(self):
+        if self.view == 'L':
+            size = 110
+        elif self.view == 'A':
+            size = 158
+        else:
+            size = 126
+        return size
+    
+    def __getitem__(self, idx):
+        raw = nib.load(self.root_dir).get_fdata()
+        if self.view == 'L':
+            n_img = raw[idx,:158,:]    
+        elif self.view == 'A':
+            n_img = raw[:110,idx,:]
+        else:
+            n_img = raw[:110,:158,idx]
+
+        num = n_img-np.min(n_img)
+        den = np.max(n_img)-np.min(n_img)
+        out = np.zeros((n_img.shape[0], n_img.shape[1]))
+    
+        n_img = np.divide(num, den, out=out, where=den!=0)
+
+        n_img = np.expand_dims(n_img,axis=0)
+        n_img = torch.from_numpy(n_img).type(torch.float)
+
+        return n_img
+        
 # KL Divergence Loss
 def kl_divergence_loss(y_pred, y_true):
     loss = F.kl_div(y_pred.log(), y_true, reduction='batchmean')
