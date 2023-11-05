@@ -29,14 +29,14 @@ class ABCFramework(nn.Module):
 
     def forward(self, x):
         # Convolutional base
-        x = nn.relu(self.conv1(x))
-        x = nn.relu(self.conv2(x))
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
         x = self.pool1(x)
-        x = nn.relu(self.conv3(x))
-        x = nn.relu(self.conv4(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
         x = self.pool2(x)
-        x = nn.relu(self.conv5(x))
-        x = nn.relu(self.conv6(x))
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
         
         # Flatten and pass through linear layers to get Q, K, V
         h, w = x.shape[-2:]
