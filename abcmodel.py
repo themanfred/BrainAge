@@ -31,6 +31,11 @@ class ABCFramework(nn.Module):
         
         # Relative positional encoding
         self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * 160 - 1) * (2 * 160 - 1), num_heads))
+        
+        # Additional layers to transform attention output into gestational age distribution
+        self.fc1 = nn.Linear(dim_head * num_heads, 128)  # Example dimensions
+        self.fc2 = nn.Linear(128, NUM_AGES)
+    
 
     def forward(self, x):
         # Convolutional base
