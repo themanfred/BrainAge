@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 # Constants defining the gestational age range
 GESTATIONAL_AGE_MIN = 15  # Minimum gestational age in weeks
