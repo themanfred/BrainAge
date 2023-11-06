@@ -1,192 +1,212 @@
 import torch
 import torch.nn as nn
-import torch.distributions as dist
-import numpy as np
-from math import ceil
-# Author: @simonamador
+import torch.nn.functional as F
 
-# The following code builds an autoencoder model for unsupervised learning applications in MRI anomaly detection.
-# The model can be build in 4 types:
-# * Default: 2d Convolutions followed by a flattening and linear transformation
-# * Residual: Includes residual blocks in between convolutions
-# * Self-attention: Includes self-attention modules in between convolutions
-# * Full: Includes both residual blocks and self-attention modules in between convolutions
+# Constants defining the gestational age range
+GESTATIONAL_AGE_MIN = 15  # Minimum gestational age in weeks
+GESTATIONAL_AGE_MAX = 40  # Maximum gestational age in weeks
+NUM_AGES = GESTATIONAL_AGE_MAX - GESTATIONAL_AGE_MIN + 1  # Total number of age classes
 
-# Basic class conducts a basic convolution-ReLU activation-batch normalization block.
-# Inputs: input channels, output channels. Optional: kernel size, stride, transpose (true or false, default is false).
-class Basic(nn.Module):
-    def __init__(self, input, output, k_size=3,stride=1,padding=0,transpose=False):
-        super(Basic, self).__init__()
 
-        if transpose == False:
-            self.conv_relu_norm = nn.Sequential(
-                nn.Conv2d(input, output, k_size, padding=padding,stride=stride),
-                nn.LeakyReLU(0.2),
-                nn.BatchNorm2d(output)
-            )
-        else:
-            self.conv_relu_norm = nn.Sequential(
-                nn.ConvTranspose2d(input, output, k_size, padding=padding,stride=stride),
-                nn.LeakyReLU(0.2),
-                nn.BatchNorm2d(output)
-            )
-    def forward(self,x):
-        return self.conv_relu_norm(x)
 
-# ResDown class conducts the residual block for the encoder.
-class ResDown(nn.Module):
-     def __init__(self, input, output,k_size,stride):
-         super(ResDown, self).__init__()
-         
-         self.basic1 = Basic(input,input,padding=1)
-         self.basic2 = Basic(input,output,k_size=k_size,stride=stride)
+class WindowAttention(nn.Module):
+    def __init__(self, num_heads, dim_head, window_size):
+        super(WindowAttention, self).__init__()
+        self.num_heads = num_heads
+        self.dim_head = dim_head
+        self.scale = dim_head ** -0.5
+        self.window_size = window_size
 
-         self.res = Basic(input,output,k_size=k_size,stride=stride)
+        # Relative positional encoding
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * window_size - 1) * (2 * window_size - 1), num_heads)
+        )
 
-     def forward(self,x):
-         residual = self.res(x)
-         x = self.basic2(self.basic1(x))
-         return residual + x
+    def forward(self, q, k, v, h, w):
+        # Compute the relative positional encoding
+        relative_position_bias = self.compute_relative_position_bias(h, w)
 
-# ResUp conducts the residual block for the decoder        
-class ResUp(nn.Module):
-    def __init__(self, input, output,k_size,stride):
-        super(ResUp, self).__init__()
+        # Scaled dot-product attention with relative positional encoding
+        attn_logits = (q @ k.transpose(-2, -1)) * self.scale + relative_position_bias
+        attn = attn_logits.softmax(dim=-1)
+        attn_output = (attn @ v).transpose(1, 2).reshape(-1, h, w, self.dim_head * self.num_heads)
+
+        # Shift the window partition
+        attn_output = self.shift_window_partition(attn_output)
+        return attn_output
+
+    def compute_relative_position_bias(self, H, W):
+        # Assuming window size (M) is given, and the number of attention heads is specified
+        M = self.window_size
+        num_heads = self.num_heads
         
-        self.basic1 = Basic(input,output,k_size=k_size, stride=stride, transpose=True)
-        self.basic2 = Basic(output,output,padding=1)
-
-        self.res = Basic(input,output,k_size=k_size, stride=stride, transpose=True)
-
-    def forward(self,x):
-        residual = self.res(x)
-        x = self.basic2(self.basic1(x))
-        return residual + x
-
-'''class SA(nn.Module):
-    dum
-
-class RESA(nn.Module):
-    dum
-'''
-
-# Encoder class builds encoder model depending on the model type.
-# Inputs: H, y (x and y size of the MRI slice),z_dim (length of the output z-parameters), model (the model type)
-class Encoder(nn.Module):
-    def __init__(
-            self, 
-            h,
-            w,
-            z_dim,
-            model='default'
-        ):
-
-        ch = 16
-        k_size = 4
-        stride = 2
-
-        super(Encoder,self).__init__()
-
-        self.step0 = Basic(1,ch,k_size=k_size, stride=stride)
-
-        if model == 'default':
-            self.step1 = Basic(ch,ch * 2, k_size=k_size, stride=stride)
-            self.step2 = Basic(ch * 2,ch * 4, k_size=k_size, stride=stride)
-            self.step3 = Basic(ch * 4,ch * 8, k_size=k_size, stride=stride)
-        elif model == 'residual':
-            self.step1 = ResDown(ch,ch * 2, k_size=k_size, stride=stride)
-            self.step2 = ResDown(ch * 2,ch * 4, k_size=k_size, stride=stride)
-            self.step3 = ResDown(ch * 4,ch * 8, k_size=k_size, stride=stride)
-            '''elif model == 'self-attention':
-                self.step1 = SA(ch,ch * 2)
-                self.step2 = SA(ch * 2,ch * 4)
-                self.step3 = SA(ch * 4,ch * 8)
-            elif model == 'full':
-                self.step1 = RESA(ch,ch * 2)
-                self.step2 = RESA(ch * 2,ch * 4)
-            self.step3 = RESA(ch * 4,ch * 8)'''
-        else:
-            raise AttributeError("Model is not valid")
+        # Create a meshgrid to compute relative distances between elements in the window
+        grid_i, grid_j = torch.meshgrid(torch.arange(M), torch.arange(M), indexing="ij")
+        relative_coords = torch.stack([grid_i - M // 2, grid_j - M // 2], dim=-1)
         
-        n_h = int(((h-k_size)/(stride**4)) - (k_size-1)/(stride**3) - (k_size-1)/(stride**2) - (k_size-1)/stride + 1)
-        n_w = int(((w-k_size)/(stride**4)) - (k_size-1)/(stride**3) - (k_size-1)/(stride**2) - (k_size-1)/stride + 1)
-        self.flat_n = n_h * n_w * ch * 8
-        self.linear = nn.Linear(self.flat_n,z_dim)
-    def forward(self,x):
-        x = self.step0(x)
-        x = self.step1(x)
-        x = self.step2(x)
-        x = self.step3(x)
-        x = x.view(-1, self.flat_n)
-        z_params = self.linear(x)
-
-        mu, log_std = torch.chunk(z_params, 2, dim=1)
-        std = torch.exp(log_std)
-
-        z_dist = dist.Normal(mu, std)
-        z_sample = z_dist.rsample()
-        return z_sample
-   
-# Decoder class builds decoder model depending on the model type.
-# Inputs: H, y (x and y size of the MRI slice),z_dim (length of the input z-vector), model (the model type) 
-
-# Note: z_dim in Encoder is not the same as z_dim in Decoder, as the z_vector has half the size of the z_parameters.
-
-class Decoder(nn.Module):
-    def __init__(
-            self, 
-            h, 
-            w, 
-            z_dim, 
-            model='default'
-            ):
-        super(Decoder, self).__init__()
-
-        self.ch = 16
-        self.k_size = 4
-        self.stride = 2
-        self.hshape = int(((h-self.k_size)/(self.stride**4)) - (self.k_size-1)/(self.stride**3) - (self.k_size-1)/(self.stride**2) - (self.k_size-1)/self.stride + 1)
-        self.wshape = int(((w-self.k_size)/(self.stride**4)) - (self.k_size-1)/(self.stride**3) - (self.k_size-1)/(self.stride**2) - (self.k_size-1)/self.stride + 1)
-
-        self.z_develop = self.hshape * self.wshape * 8 * self.ch
-        self.linear = nn.Linear(z_dim, self.z_develop)
-
-        if model == 'default':
-            self.step1 = Basic(self.ch* 8, self.ch * 4, k_size=self.k_size, stride=self.stride, transpose=True)
-            self.step2 = Basic(self.ch * 4, self.ch * 2, k_size=self.k_size, stride=self.stride, transpose=True)
-            self.step3 = Basic(self.ch * 2, self.ch, k_size=self.k_size, stride=self.stride, transpose=True)
-        elif model == 'residual':
-            self.step1 = ResUp(self.ch * 8, self.ch * 4, k_size=self.k_size, stride=self.stride)
-            self.step2 = ResUp(self.ch * 4, self.ch * 2, k_size=self.k_size, stride=self.stride)
-            self.step3 = ResUp(self.ch * 2, self.ch, k_size=self.k_size, stride=self.stride)
-            '''elif model == 'self-attention':
-                self.step1 = SA(ch,ch * 2)
-                self.step2 = SA(ch * 2,ch * 4)
-                self.step3 = SA(ch * 4,ch * 8)
-            elif model == 'all':
-                self.step1 = RESA(ch,ch * 2)
-                self.step2 = RESA(ch * 2,ch * 4)
-            self.step3 = RESA(ch * 4,ch * 8)'''
-        else:
-            raise AttributeError("Model is not valid")
+        # Flatten the relative coordinates and add an extra dimension for heads
+        relative_coords = relative_coords.view(-1, 2).unsqueeze(0)
         
-        self.step4 = Basic(self.ch, 1, k_size=self.k_size, stride=self.stride, transpose=True)
-        self.relu = nn.ReLU()
+        # Convert relative position indices to linear indices
+        relative_position_index = relative_coords[:, :, 0] * 2 * M + relative_coords[:, :, 1] + M
+        
+        # Get the biases for the relative positions
+        relative_position_bias = self.relative_position_bias_table[relative_position_index.view(-1)].view(
+            M, M, num_heads
+        )
+        
+        return relative_position_bias.permute(2, 0, 1)  # Shape (num_heads, M, M)
+        
+    def shift_window_partition(self, x, shift=True):
+        # Shift the window partition based on the provided configuration
+        # Assuming x has shape [batch_size, channels, height, width]
+        
+        B, C, H, W = x.shape
+        M = self.window_size  # Window size is given
+        
+        # Check if the height and width are divisible by the window size
+        if H % M != 0 or W % M != 0:
+            raise ValueError("Feature map dimensions must be divisible by the window size.")
+        
+        shift_size = M // 2  # Shift size is half the window size
+        
+        if shift:
+            # Perform the window partitioning with forward shift
+            shifted_x = torch.roll(x, shifts=(-shift_size, -shift_size), dims=(2, 3))
+        else:
+            # Perform the window partitioning with reverse shift
+            shifted_x = torch.roll(x, shifts=(shift_size, shift_size), dims=(2, 3))
+        
+        return shifted_x
 
-    def forward(self,z):
-        x = self.linear(z)
-        x = x.view(-1, self.ch * 8, self.hshape, self.wshape)
-        x = self.step1(x)
-        x = self.step2(x)
-        x = self.step3(x)
-        x = self.step4(x)
-        recon = self.relu(x)
-        return recon
+
+        
+class ABCFramework(nn.Module):
+    def __init__(self, num_heads, dim_head):
+        super(ABCFramework, self).__init__()
+
+        """
+        # Convolutional Base
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=3, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv3 = nn.Conv2d(in_channels=3, out_channels=6, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(in_channels=6, out_channels=6, kernel_size=3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv5 = nn.Conv2d(in_channels=6, out_channels=9, kernel_size=3, stride=1, padding=1)
+        self.conv6 = nn.Conv2d(in_channels=9, out_channels=9, kernel_size=3, stride=1, padding=1)
+
+        """
+        # Applies He initialization to the weights of each convolutional layer.
+        def init_weights(m):
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            
+        self.conv_layers = nn.Sequential(
+            # Layer 1 (1 -> 3 channels)
+            nn.Conv2d(in_channels=1, out_channels=3, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(3),
+            nn.ReLU(),
+            # Layer 2 (3 -> 3 channels)
+            nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(3),
+            nn.ReLU(),
+            # Pooling
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # Layer 3 (3 -> 6 channels)
+            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(6),
+            nn.ReLU(),
+            # Layer 4 (6 -> 6 channels)
+            nn.Conv2d(in_channels=6, out_channels=6, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(6),
+            nn.ReLU(),
+            # Pooling
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # Layer 5 (6 -> 9 channels)
+            nn.Conv2d(in_channels=6, out_channels=9, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(9),
+            nn.ReLU(),
+            # Layer 6 (9 -> 9 channels)
+            nn.Conv2d(in_channels=9, out_channels=9, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(9),
+            nn.ReLU(),
+            # Layer 7 (9 -> 9 channels)
+            nn.Conv2d(in_channels=9, out_channels=9, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(9),
+            nn.ReLU(),
+            # Layer 8 (9 -> 9 channels)
+            nn.Conv2d(in_channels=9, out_channels=9, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(9),
+            nn.ReLU()
+        )
+        
+        self.conv_layers.apply(init_weights)
+
+        
+        #Set window and img size
+        self.window_size = window_size
+        self.img_size = img_size
+        
+        # Parameters for Q, K, V
+        self.num_heads = num_heads
+        self.dim_head = dim_head
+        self.scale = dim_head ** -0.5
+
+        # Initialize the relative position bias table
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((window_size * window_size, num_heads))
+        )
+        # Linear transformations for Q, K, V
+        self.to_qkv = nn.Linear(9, num_heads * dim_head * 3, bias=False)
+        
+       # Window attention module
+        self.window_attention = WindowAttention(num_heads, dim_head, window_size)
+        
+        # Additional layers to transform attention output into gestational age distribution
+        self.fc1 = nn.Linear(dim_head * num_heads * window_size * window_size, 128)  # Example dimensions
+        self.fc2 = nn.Linear(128, NUM_AGES)
     
+    
+    def forward(self, x):
 
-if __name__ == '__main__':
-    from torchsummary import summary
-    emodel = Encoder(116, 126, 512,model='default')
-    dmodel = Decoder(116, 126, 256,model='default')
-    summary(emodel, (1, 116, 126), device='cpu')
-    summary(dmodel, (1, 256), device='cpu')
+        x = self.conv_layers(x)
+        """
+        # Convolutional base
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.pool1(x)
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.pool2(x)
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+        """
+        # Flatten and pass through linear layers to get Q, K, V
+        h, w = x.shape[-2:]
+        qkv = self.to_qkv(x.flatten(2)).chunk(3, dim=-1)
+        q, k, v = map(lambda t: t.reshape(-1, self.num_heads, self.dim_head), qkv)
+        
+        # Window attention
+        attn_output = self.window_attention(q, k, v, h, w)
+    
+        # Transform attention output into gestational age distribution
+        x = attn_output.flatten(1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        predicted_ages = F.softmax(x, dim=1)
+        
+        return predicted_ages
+
+
+
+ 
+
+# Instantiate the model
+num_heads = 4
+dim_head = 64
+window_size = 4
+img_size = 160
+model = ABCFramework(num_heads, dim_head, window_size, img_size)
