@@ -188,7 +188,7 @@ for tt in range(len(val_GW)):
 
 #model = age_predic_network([138,176,1])
 model = build_ST()
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate, decay=0.001), loss=huber_loss, metrics=['mae'])
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate, decay=0.0001), loss=huber_loss, metrics=['mae','mse'])
 
 cb_reduceLR = ReduceLROnPlateau(monitor='mae', factor=args.red_factor, patience=100, verbose=1)
 cb_earlyStop = EarlyStopping(monitor='mae', patience=500, verbose=1, mode='min',restore_best_weights=True)
